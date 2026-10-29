@@ -10,48 +10,40 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Check Visual Studio and LLVM
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-
-          & $vswhere -latest -products * -property installationVersion
-
-          where.exe cl 2>$null
-          where.exe llvm-nm 2>$null
-
-          Write-Host "Toolchain inspection completed"
-
       - name: Install Xmake
         uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: latest
 
-      - name: Check Xmake
+      - name: Check tools
         shell: pwsh
         run: |
           xmake --version
           xrepo --version
+          git --version
 
-      - name: Download official Ardour dependency recipe
+      - name: Download Ardour dependency recipe
         shell: pwsh
         run: |
+          git clone https://gist.github.com/0e3f7bf6380c086e9ff57f8f34298172.git recipe
+
           New-Item -ItemType Directory -Force -Path stack | Out-Null
 
-          $url = "https://gist.githubusercontent.com/x42/0e3f7bf6380c086e9ff57f8f34298172/raw/ardour-build-dep.lua"
-
-          Invoke-WebRequest -Uri $url -OutFile stack/xmake.lua
+          Copy-Item recipe/ardour-depxs-xmakes.lua stack/xmake.lua
 
           if (!(Test-Path stack/xmake.lua)) {
-            throw "Ardour dependency recipe missing"
+            throw "Dependency recipe missing"
           }
 
-          Get-Content stack/xmake.lua -TotalCount 30
+          Get-Content stack/xmake.lua -TotalCount 20
 
       - name: Update Xrepo
         shell: pwsh
         run: |
           xrepo update-repo
+          if ($LASTEXITCODE -ne 0) {
+            throw "Xrepo update failed"
+          }
 
       - name: Configure dependency stack
         shell: pwsh
@@ -71,14 +63,18 @@ jobs:
             throw "Dependency build failed"
           }
 
-      - name: Inspect compiled dependencies
+      - name: Inspect dependencies
         shell: pwsh
         run: |
-          Get-ChildItem stack -Directory
-          Get-ChildItem stack -Recurse -Filter "*.pc" |
-            Select-Object -First 40 -ExpandProperty FullName
+          if (Test-Path stack/release) {
+            Get-ChildItem stack/release
+            Get-ChildItem stack/release -Recurse -Filter "*.pc" |
+              Select-Object -First 40 -ExpandProperty FullName
+          } else {
+            throw "Release dependency folder missing"
+          }
 
-      - name: Upload dependency logs
+      - name: Upload diagnostic files
         if: always()
         uses: actions/upload-artifact@v4
         with:
