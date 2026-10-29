@@ -29,7 +29,7 @@ jobs:
 
           cd ardour
 
-          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc --no-confirm
+          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc
 
       - name: Upload configuration logs
         if: always()
@@ -40,3 +40,4 @@ jobs:
             ardour/build/config.log
             ardour/build/c4che/
           if-no-files-found: warn
+  
