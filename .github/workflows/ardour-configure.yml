@@ -16,15 +16,10 @@ jobs:
           path: ardour
           fetch-depth: 1
 
-      - name: Install Boost headers
+      - name: Install and locate Boost
         shell: pwsh
         run: |
           $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
-
-          if (!(Test-Path $vcpkg)) {
-            throw "vcpkg not found"
-          }
-
           & $vcpkg install boost-headers:x64-windows
 
           if ($LASTEXITCODE -ne 0) {
@@ -32,15 +27,28 @@ jobs:
           }
 
           $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
-          $header = Join-Path $root "include\boost\version.hpp"
 
-          if (!(Test-Path $header)) {
-            throw "Boost headers missing"
+          $headers = Get-ChildItem `
+            -Path "$root\include" `
+            -Filter version.hpp `
+            -Recurse |
+            Where-Object {
+              $_.FullName -match 'boost[\\/]version.hpp$'
+            }
+
+          if (!$headers) {
+            throw "Boost version.hpp not found"
           }
 
-          Write-Host "Boost headers ready"
+          $boostDir = Split-Path `
+            (Split-Path $headers[0].FullName -Parent) `
+            -Parent
 
-      - name: Configure Ardour with Boost and MSVC
+          Write-Host "Boost include directory: $boostDir"
+
+          "BOOST_INCLUDE=$boostDir" >> $env:GITHUB_ENV
+
+      - name: Configure Ardour with MSVC
         shell: cmd
         run: |
           set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -51,11 +59,9 @@ jobs:
 
           call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
 
-          set "BOOST_ROOT=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows"
-
           cd ardour
 
-          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc --boost-include="%BOOST_ROOT%\include" --noconfirm
+          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc --boost-include="%BOOST_INCLUDE%" --noconfirm
 
       - name: Upload configuration logs
         if: always()
