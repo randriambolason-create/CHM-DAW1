@@ -16,35 +16,44 @@ jobs:
           path: ardour
           fetch-depth: 1
 
-      - name: Check build tools
-        shell: pwsh
+      - name: Check Windows build tools
+        shell: cmd
         run: |
-          Write-Host "=== CHM DAW DIAGNOSTIC ==="
+          echo === CHM DAW WINDOWS DIAGNOSTIC ===
 
-          Write-Host "CMake:"
           cmake --version
-
-          Write-Host "Python:"
           python --version
-
-          Write-Host "Git:"
           git --version
 
-          Write-Host "MSVC:"
-          where.exe cl
+          echo === FIND VISUAL STUDIO ===
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 
-          Write-Host "Ardour source:"
-          Get-ChildItem ardour |
-            Select-Object -First 20 Name
+          if not exist "%VSWHERE%" exit /b 1
 
-      - name: Upload diagnostic report
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
+
+          if not defined VS_PATH exit /b 1
+
+          echo Visual Studio: %VS_PATH%
+
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
+
+          echo === MSVC VERSION ===
+          cl
+
+          echo === ARDOUR SOURCE ===
+          if not exist ardour\wscript exit /b 1
+
+          echo CHM DAW diagnostic completed
+
+      - name: Save diagnostic report
         if: always()
         shell: pwsh
         run: |
-          "CHM DAW diagnostic completed" |
+          "CHM DAW diagnostic executed" |
             Out-File diagnostic.txt
 
-      - name: Save report
+      - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
