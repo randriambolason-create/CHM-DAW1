@@ -1,0 +1,31 @@
+
+name: CHM DAW - Windows Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-check:
+    runs-on: windows-latest
+
+    steps:
+      - name: Download Ardour
+        uses: actions/checkout@v4
+        with:
+          repository: Ardour/ardour
+          path: ardour
+          fetch-depth: 1
+
+      - name: Check Windows environment
+        shell: pwsh
+        run: |
+          Write-Host "Windows runner ready"
+          Write-Host "Checking build tools..."
+          cmake --version
+          git --version
+          python --version
+          Write-Host "Checking Ardour source..."
+          if (!(Test-Path "ardour/wscript")) {
+            throw "Ardour source missing"
+          }
+          Write-Host "CHM DAW Windows check OK"
