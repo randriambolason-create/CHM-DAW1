@@ -1,0 +1,31 @@
+
+name: CHM DAW - Ardour Source
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare-source:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Ardour source
+        uses: actions/checkout@v4
+        with:
+          repository: Ardour/ardour
+          path: ardour
+          fetch-depth: 1
+
+      - name: Verify source
+        run: |
+          echo "Checking Ardour source..."
+          test -f ardour/wscript
+          ls -la ardour
+          echo "Ardour source downloaded successfully"
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ardour-source
+          path: ardour/
+          retention-days: 3
