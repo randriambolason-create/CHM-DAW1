@@ -1,42 +1,115 @@
 
-name: CHM DAW - GLib Dependency Test
+name: CHM DAW - Windows Dependencies and Configure
 
 on:
   workflow_dispatch:
 
 jobs:
-  glib-test:
+  configure:
     runs-on: windows-latest
+    timeout-minutes: 180
 
     steps:
-      - name: Install GLib
+      - name: Download Ardour
+        uses: actions/checkout@v4
+        with:
+          repository: Ardour/ardour
+          path: ardour
+          fetch-depth: 1
+
+      - name: Install Windows dependencies
         shell: pwsh
         run: |
           $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
 
-          & $vcpkg install glib:x64-windows
+          $packages = @(
+            "boost:x64-windows",
+            "glib:x64-windows",
+            "glibmm:x64-windows",
+            "libsndfile:x64-windows",
+            "curl:x64-windows",
+            "libarchive:x64-windows",
+            "liblo:x64-windows",
+            "taglib:x64-windows",
+            "rubberband:x64-windows"
+          )
+
+          & $vcpkg install @packages
 
           if ($LASTEXITCODE -ne 0) {
-            throw "GLib installation failed"
+            throw "Dependency installation failed"
           }
 
-      - name: Find pkg-config and GLib
+      - name: Configure pkg-config paths
         shell: pwsh
         run: |
           $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
 
-          Write-Host "Checking GLib headers:"
-          Get-ChildItem "$root\include" -Recurse -Filter glib.h -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty FullName
+          $pcPaths = @(
+            "$root\lib\pkgconfig",
+            "$root\share\pkgconfig"
+          )
 
-          Write-Host "Checking GLib pkg-config files:"
-          Get-ChildItem "$root" -Recurse -Filter glib-2.0.pc -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty FullName
+          $pcPath = $pcPaths -join ";"
 
-          Write-Host "Checking pkg-config:"
-          Get-Command pkg-config -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty Source
+          "PKG_CONFIG_PATH=$pcPath" >> $env:GITHUB_ENV
+          "PKG_CONFIG_LIBDIR=$pcPath" >> $env:GITHUB_ENV
+          "BOOST_INCLUDE=$root\include" >> $env:GITHUB_ENV
 
-          Write-Host "Checking pkgconf:"
-          Get-Command pkgconf -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty Source
+          Write-Host "PKG_CONFIG_PATH=$pcPath"
+
+      - name: Check installed libraries
+        shell: pwsh
+        run: |
+          $modules = @(
+            "glib-2.0",
+            "gthread-2.0",
+            "glibmm-2.4",
+            "sndfile",
+            "giomm-2.4",
+            "libcurl",
+            "libarchive",
+            "liblo",
+            "taglib",
+            "rubberband",
+            "vamp-sdk",
+            "vamp-hostsdk"
+          )
+
+          foreach ($module in $modules) {
+            Write-Host "Checking $module"
+            & pkg-config --modversion $module
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "$module not found"
+            }
+          }
+
+      - name: Configure Ardour with MSVC
+        shell: cmd
+        run: |
+          @echo off
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
+
+          if not defined VS_PATH exit /b 1
+
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+
+          set "INCLUDE=%BOOST_INCLUDE%;%INCLUDE%"
+
+          cd ardour
+
+          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc --noconfirm
+
+      - name: Upload Ardour configuration logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chm-ardour-windows-logs
+          path: |
+            ardour/build/config.log
+            ardour/build/c4che/
+          if-no-files-found: warn
