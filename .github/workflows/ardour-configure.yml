@@ -1,0 +1,49 @@
+
+name: CHM DAW - Ardour Configure
+
+on:
+  workflow_dispatch:
+
+jobs:
+  configure:
+    runs-on: windows-latest
+
+    steps:
+      - name: Download Ardour
+        uses: actions/checkout@v4
+        with:
+          repository: Ardour/ardour
+          path: ardour
+          fetch-depth: 1
+
+      - name: Check Waf configuration
+        shell: pwsh
+        run: |
+          Write-Host "=== ARDOUR BUILD SYSTEM ==="
+
+          Set-Location ardour
+
+          Write-Host "Python:"
+          python --version
+
+          Write-Host "Waf help:"
+          python waf --help
+
+          Write-Host "Windows options:"
+          Select-String -Path wscript `
+            -Pattern "msvc|win32|windows" |
+            Select-Object -First 30
+
+      - name: Save configuration report
+        if: always()
+        shell: pwsh
+        run: |
+          "CHM DAW Waf configuration diagnostic" |
+            Out-File configure-report.txt
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chm-configure-report
+          path: configure-report.txt
