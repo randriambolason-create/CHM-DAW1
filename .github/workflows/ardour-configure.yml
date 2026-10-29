@@ -16,34 +16,27 @@ jobs:
           path: ardour
           fetch-depth: 1
 
-      - name: Check Waf configuration
-        shell: pwsh
+      - name: Configure Ardour with MSVC
+        shell: cmd
         run: |
-          Write-Host "=== ARDOUR BUILD SYSTEM ==="
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 
-          Set-Location ardour
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
 
-          Write-Host "Python:"
-          python --version
+          if not defined VS_PATH exit /b 1
 
-          Write-Host "Waf help:"
-          python waf --help
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
 
-          Write-Host "Windows options:"
-          Select-String -Path wscript `
-            -Pattern "msvc|win32|windows" |
-            Select-Object -First 30
+          cd ardour
 
-      - name: Save configuration report
-        if: always()
-        shell: pwsh
-        run: |
-          "CHM DAW Waf configuration diagnostic" |
-            Out-File configure-report.txt
+          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc --no-confirm
 
-      - name: Upload report
+      - name: Upload configuration logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chm-configure-report
-          path: configure-report.txt
+          name: ardour-configure-logs
+          path: |
+            ardour/build/config.log
+            ardour/build/c4che/
+          if-no-files-found: warn
