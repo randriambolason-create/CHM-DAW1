@@ -1,0 +1,52 @@
+
+name: CHM DAW - Build Diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+
+    steps:
+      - name: Download Ardour source
+        uses: actions/checkout@v4
+        with:
+          repository: Ardour/ardour
+          path: ardour
+          fetch-depth: 1
+
+      - name: Check build tools
+        shell: pwsh
+        run: |
+          Write-Host "=== CHM DAW DIAGNOSTIC ==="
+
+          Write-Host "CMake:"
+          cmake --version
+
+          Write-Host "Python:"
+          python --version
+
+          Write-Host "Git:"
+          git --version
+
+          Write-Host "MSVC:"
+          where.exe cl
+
+          Write-Host "Ardour source:"
+          Get-ChildItem ardour |
+            Select-Object -First 20 Name
+
+      - name: Upload diagnostic report
+        if: always()
+        shell: pwsh
+        run: |
+          "CHM DAW diagnostic completed" |
+            Out-File diagnostic.txt
+
+      - name: Save report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chm-diagnostic
+          path: diagnostic.txt
