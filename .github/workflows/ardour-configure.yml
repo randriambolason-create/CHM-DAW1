@@ -1,11 +1,11 @@
 
-name: CHM DAW - Boost Diagnostic
+name: CHM DAW - Boost and Ardour Configure
 
 on:
   workflow_dispatch:
 
 jobs:
-  boost-diagnostic:
+  configure:
     runs-on: windows-latest
 
     steps:
@@ -16,7 +16,7 @@ jobs:
           path: ardour
           fetch-depth: 1
 
-      - name: Install Boost with vcpkg
+      - name: Install Boost headers
         shell: pwsh
         run: |
           $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
@@ -25,37 +25,44 @@ jobs:
             throw "vcpkg not found"
           }
 
-          & $vcpkg install boost:x64-windows
+          & $vcpkg install boost-headers:x64-windows
 
           if ($LASTEXITCODE -ne 0) {
             throw "Boost installation failed"
           }
 
-      - name: Verify Boost headers
-        shell: pwsh
-        run: |
           $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
-
           $header = Join-Path $root "include\boost\version.hpp"
 
           if (!(Test-Path $header)) {
-            throw "Boost headers not found"
+            throw "Boost headers missing"
           }
 
-          Write-Host "Boost headers found"
-          Get-Content $header |
-            Select-String "BOOST_LIB_VERSION"
+          Write-Host "Boost headers ready"
 
-      - name: Upload diagnostic
-        if: always()
-        shell: pwsh
+      - name: Configure Ardour with Boost and MSVC
+        shell: cmd
         run: |
-          "CHM DAW Boost diagnostic completed" |
-            Out-File boost-report.txt
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 
-      - name: Save report
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
+
+          if not defined VS_PATH exit /b 1
+
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
+
+          set "BOOST_ROOT=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows"
+
+          cd ardour
+
+          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc --boost-include="%BOOST_ROOT%\include" --noconfirm
+
+      - name: Upload configuration logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chm-boost-report
-          path: boost-report.txt
+          name: chm-ardour-configure-logs
+          path: |
+            ardour/build/config.log
+            ardour/build/c4che/
+          if-no-files-found: warn
