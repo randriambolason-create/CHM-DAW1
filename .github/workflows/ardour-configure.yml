@@ -1,115 +1,89 @@
 
-name: CHM DAW - Windows Dependencies and Configure
+name: CHM DAW - Windows Xmake Dependencies
 
 on:
   workflow_dispatch:
 
 jobs:
-  configure:
+  dependencies:
     runs-on: windows-latest
     timeout-minutes: 180
 
     steps:
-      - name: Download Ardour
-        uses: actions/checkout@v4
+      - name: Check Visual Studio and LLVM
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          & $vswhere -latest -products * -property installationVersion
+
+          where.exe cl 2>$null
+          where.exe llvm-nm 2>$null
+
+          Write-Host "Toolchain inspection completed"
+
+      - name: Install Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
         with:
-          repository: Ardour/ardour
-          path: ardour
-          fetch-depth: 1
+          xmake-version: latest
 
-      - name: Install Windows dependencies
+      - name: Check Xmake
         shell: pwsh
         run: |
-          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
+          xmake --version
+          xrepo --version
 
-          $packages = @(
-            "boost:x64-windows",
-            "glib:x64-windows",
-            "glibmm:x64-windows",
-            "libsndfile:x64-windows",
-            "curl:x64-windows",
-            "libarchive:x64-windows",
-            "liblo:x64-windows",
-            "taglib:x64-windows",
-            "rubberband:x64-windows"
-          )
+      - name: Download official Ardour dependency recipe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path stack | Out-Null
 
-          & $vcpkg install @packages
+          $url = "https://gist.githubusercontent.com/x42/0e3f7bf6380c086e9ff57f8f34298172/raw/ardour-build-dep.lua"
 
+          Invoke-WebRequest -Uri $url -OutFile stack/xmake.lua
+
+          if (!(Test-Path stack/xmake.lua)) {
+            throw "Ardour dependency recipe missing"
+          }
+
+          Get-Content stack/xmake.lua -TotalCount 30
+
+      - name: Update Xrepo
+        shell: pwsh
+        run: |
+          xrepo update-repo
+
+      - name: Configure dependency stack
+        shell: pwsh
+        working-directory: stack
+        run: |
+          xmake f -c -y
           if ($LASTEXITCODE -ne 0) {
-            throw "Dependency installation failed"
+            throw "Xmake configuration failed"
           }
 
-      - name: Configure pkg-config paths
+      - name: Build dependency stack
         shell: pwsh
+        working-directory: stack
         run: |
-          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
-
-          $pcPaths = @(
-            "$root\lib\pkgconfig",
-            "$root\share\pkgconfig"
-          )
-
-          $pcPath = $pcPaths -join ";"
-
-          "PKG_CONFIG_PATH=$pcPath" >> $env:GITHUB_ENV
-          "PKG_CONFIG_LIBDIR=$pcPath" >> $env:GITHUB_ENV
-          "BOOST_INCLUDE=$root\include" >> $env:GITHUB_ENV
-
-          Write-Host "PKG_CONFIG_PATH=$pcPath"
-
-      - name: Check installed libraries
-        shell: pwsh
-        run: |
-          $modules = @(
-            "glib-2.0",
-            "gthread-2.0",
-            "glibmm-2.4",
-            "sndfile",
-            "giomm-2.4",
-            "libcurl",
-            "libarchive",
-            "liblo",
-            "taglib",
-            "rubberband",
-            "vamp-sdk",
-            "vamp-hostsdk"
-          )
-
-          foreach ($module in $modules) {
-            Write-Host "Checking $module"
-            & pkg-config --modversion $module
-
-            if ($LASTEXITCODE -ne 0) {
-              Write-Warning "$module not found"
-            }
+          xmake -y
+          if ($LASTEXITCODE -ne 0) {
+            throw "Dependency build failed"
           }
 
-      - name: Configure Ardour with MSVC
-        shell: cmd
+      - name: Inspect compiled dependencies
+        shell: pwsh
         run: |
-          @echo off
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          Get-ChildItem stack -Directory
+          Get-ChildItem stack -Recurse -Filter "*.pc" |
+            Select-Object -First 40 -ExpandProperty FullName
 
-          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
-
-          if not defined VS_PATH exit /b 1
-
-          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
-          if errorlevel 1 exit /b 1
-
-          set "INCLUDE=%BOOST_INCLUDE%;%INCLUDE%"
-
-          cd ardour
-
-          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc --noconfirm
-
-      - name: Upload Ardour configuration logs
+      - name: Upload dependency logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chm-ardour-windows-logs
+          name: chm-daw-xmake-diagnostics
           path: |
-            ardour/build/config.log
-            ardour/build/c4che/
-          if-no-files-found: warn
+            stack/.xmake/
+            stack/build/
+          if-no-files-found: ignore
