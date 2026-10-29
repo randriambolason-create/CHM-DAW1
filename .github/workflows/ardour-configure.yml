@@ -1,98 +1,42 @@
 
-name: CHM DAW - Boost MSVC and Ardour Configure
+name: CHM DAW - GLib Dependency Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  configure:
+  glib-test:
     runs-on: windows-latest
 
     steps:
-      - name: Download Ardour
-        uses: actions/checkout@v4
-        with:
-          repository: Ardour/ardour
-          path: ardour
-          fetch-depth: 1
-
-      - name: Install Boost
+      - name: Install GLib
         shell: pwsh
         run: |
           $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe"
 
-          if (!(Test-Path $vcpkg)) {
-            throw "vcpkg not found"
-          }
-
-          & $vcpkg install boost:x64-windows
+          & $vcpkg install glib:x64-windows
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Boost installation failed"
+            throw "GLib installation failed"
           }
 
-      - name: Find Boost and test MSVC
-        shell: cmd
+      - name: Find pkg-config and GLib
+        shell: pwsh
         run: |
-          @echo off
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          $root = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
 
-          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
+          Write-Host "Checking GLib headers:"
+          Get-ChildItem "$root\include" -Recurse -Filter glib.h -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
 
-          if not defined VS_PATH exit /b 1
+          Write-Host "Checking GLib pkg-config files:"
+          Get-ChildItem "$root" -Recurse -Filter glib-2.0.pc -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
 
-          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
-          if errorlevel 1 exit /b 1
+          Write-Host "Checking pkg-config:"
+          Get-Command pkg-config -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Source
 
-          set "BOOST_INCLUDE=%VCPKG_INSTALLATION_ROOT%\installed\x64-windows\include"
-
-          if not exist "%BOOST_INCLUDE%\boost\version.hpp" (
-            echo Boost version.hpp not found at standard path
-            echo Searching vcpkg directories...
-            dir /s /b "%VCPKG_INSTALLATION_ROOT%\version.hpp"
-            exit /b 1
-          )
-
-          echo #include ^<boost/version.hpp^> > boost-test.cpp
-          echo #if BOOST_VERSION ^< 106800 >> boost-test.cpp
-          echo #error Boost version too old >> boost-test.cpp
-          echo #endif >> boost-test.cpp
-          echo int main() { return 0; } >> boost-test.cpp
-
-          cl /nologo /EHsc /I"%BOOST_INCLUDE%" boost-test.cpp /Fe:boost-test.exe
-          if errorlevel 1 exit /b 1
-
-          boost-test.exe
-          if errorlevel 1 exit /b 1
-
-          echo BOOST_INCLUDE=%BOOST_INCLUDE%>> "%GITHUB_ENV%"
-          echo Boost MSVC test passed
-
-      - name: Configure Ardour
-        shell: cmd
-        run: |
-          @echo off
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-
-          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
-
-          if not defined VS_PATH exit /b 1
-
-          call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
-          if errorlevel 1 exit /b 1
-
-          cd ardour
-
-          set "INCLUDE=%BOOST_INCLUDE%;%INCLUDE%"
-
-          python waf configure --check-c-compiler=msvc --check-cxx-compiler=msvc --dist-target=msvc --noconfirm
-
-      - name: Upload Ardour logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: chm-ardour-configuration-logs
-          path: |
-            ardour/build/config.log
-            ardour/build/c4che/
-          if-no-files-found: warn
+          Write-Host "Checking pkgconf:"
+          Get-Command pkgconf -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Source
