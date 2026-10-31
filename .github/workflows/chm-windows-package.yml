@@ -44,6 +44,32 @@ jobs:
           xmake -y
           if ($LASTEXITCODE -ne 0) { throw "Xmake build failed" }
 
+      - name: Diagnose Raptor headers
+        shell: pwsh
+        run: |
+          Write-Host "Checking Raptor headers..."
+          $root = "stack/release/include"
+
+          if (!(Test-Path $root)) {
+            throw "Dependency include directory missing"
+          }
+
+          Get-ChildItem $root -Recurse -File |
+            Where-Object {
+              $_.Name -eq "raptor.h" -or
+              $_.Name -eq "raptor2.h" -or
+              $_.Name -eq "librdf.h"
+            } |
+            Select-Object -ExpandProperty FullName
+
+          Write-Host "Checking pkg-config..."
+          $env:PKG_CONFIG_PATH = "$env:GITHUB_WORKSPACE/stack/release/lib/pkgconfig"
+
+          foreach ($pkg in @("raptor2", "redland")) {
+            Write-Host "Package: $pkg"
+            pkg-config --cflags $pkg
+          }
+
       - name: Download Ardour source
         shell: pwsh
         run: |
