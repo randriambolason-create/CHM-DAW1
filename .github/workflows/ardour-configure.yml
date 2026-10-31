@@ -1,128 +1,53 @@
 
-name: CHM DAW - Windows Ardour Build
+name: CHM DAW - MSVC Toolchain Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  test-msvc:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 15
 
     steps:
-      - name: Install Xmake
-        uses: xmake-io/github-action-setup-xmake@v1
-        with:
-          xmake-version: latest
-
-      - name: Download dependency recipe
-        shell: pwsh
-        run: |
-          git clone https://gist.github.com/0e3f7bf6380c086e9ff57f8f34298172.git recipe
-          New-Item -ItemType Directory -Force stack | Out-Null
-          Copy-Item recipe/ardour-depxs-xmakes.lua stack/xmake.lua
-
-      - name: Restore dependency cache
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            stack/release
-            ~\.xmake
-          key: ardour-xmake-win-${{ runner.os }}-v1
-
-      - name: Prepare dependency stack
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        working-directory: stack
-        run: |
-          xrepo update-repo
-          xmake f -c -y
-          if ($LASTEXITCODE -ne 0) {
-            throw "Dependency configuration failed"
-          }
-          xmake -y
-          if ($LASTEXITCODE -ne 0) {
-            throw "Dependency build failed"
-          }
-
-      - name: Verify dependencies
-        shell: pwsh
-        run: |
-          if (!(Test-Path stack/release/lib)) {
-            throw "Dependency library folder missing"
-          }
-          Get-ChildItem stack/release
-
-      - name: Download Ardour full source
-        shell: pwsh
-        run: |
-          git clone https://github.com/Ardour/ardour.git ardour
-          if ($LASTEXITCODE -ne 0) {
-            throw "Ardour clone failed"
-          }
-
-      - name: Check compiler and LLVM
+      - name: Locate Visual Studio
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $version = & $vswhere -latest -products * -property installationVersion
-          Write-Host "Visual Studio version: $version"
 
-          if (!$version -or ([int]($version.Split('.')[0]) -lt 18)) {
-            throw "Visual Studio 2026 (version 18+) required"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+
+          if (!$vs) {
+            throw "Visual Studio C++ tools not found"
           }
 
-          $llvm = Get-Command llvm-nm -ErrorAction SilentlyContinue
-          if (!$llvm) {
-            throw "llvm-nm not found in PATH"
-          }
-          & llvm-nm --version
+          Write-Host "Visual Studio: $vs"
 
-      - name: Configure Ardour
-        shell: pwsh
-        working-directory: ardour
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+
+          if (!(Test-Path $vcvars)) {
+            throw "vcvars64.bat missing"
+          }
+
+          "VCVARS=$vcvars" >> $env:GITHUB_ENV
+
+      - name: Initialize MSVC and verify tools
+        shell: cmd
         run: |
-          $root = (Resolve-Path ../stack/release).Path
+          @echo off
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
 
-          $env:PATH = "$root\bin;$env:PATH"
-          $env:PKG_CONFIG_PATH = "$root\lib\pkgconfig"
+          echo Checking C++ compiler
+          where cl
+          if errorlevel 1 exit /b 1
 
-          python waf configure `
-            --prefix=C:\ArdourMSVC `
-            --configdir=share `
-            --ptformat `
-            --dist-target=msvc `
-            --cxx17 `
-            --optimize `
-            --also-include="$root\include" `
-            --also-libdir="$root\lib"
+          echo Checking Microsoft assembler
+          where ml64
+          if errorlevel 1 exit /b 1
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Ardour configuration failed"
-          }
+          echo Checking linker
+          where link
+          if errorlevel 1 exit /b 1
 
-      - name: Compile Ardour
-        shell: pwsh
-        working-directory: ardour
-        run: |
-          $root = (Resolve-Path ../stack/release).Path
-
-          $env:PATH = "$root\bin;$env:PATH"
-          $env:PKG_CONFIG_PATH = "$root\lib\pkgconfig"
-
-          python waf
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Ardour compilation failed"
-          }
-
-      - name: Upload build files
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: chm-daw-windows-build
-          path: |
-            ardour/build/
-          if-no-files-found: warn
-          retention-days: 7
+          echo MSVC toolchain ready
