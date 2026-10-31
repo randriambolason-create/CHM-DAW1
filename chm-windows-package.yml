@@ -1,0 +1,176 @@
+
+name: CHM DAW - Windows Test Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Download dependency recipe
+        shell: pwsh
+        run: |
+          git clone https://gist.github.com/0e3f7bf6380c086e9ff57f8f34298172.git recipe
+          if ($LASTEXITCODE -ne 0) { throw "Recipe clone failed" }
+          New-Item -ItemType Directory -Force stack | Out-Null
+          Copy-Item recipe/ardour-depxs-xmakes.lua stack/xmake.lua
+
+      - name: Restore dependency cache
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            stack/release
+            ~/.xmake
+          key: chm-ardour-stack-win-v2
+
+      - name: Build dependency stack
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        working-directory: stack
+        run: |
+          xrepo update-repo
+          if ($LASTEXITCODE -ne 0) { throw "Xrepo failed" }
+          xmake f -c -y
+          if ($LASTEXITCODE -ne 0) { throw "Configure failed" }
+          xmake -y
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+
+      - name: Verify dependencies
+        shell: pwsh
+        run: |
+          if (!(Test-Path stack/release/lib)) {
+            throw "Dependency libraries missing"
+          }
+
+      - name: Download Ardour
+        shell: pwsh
+        run: |
+          git clone https://github.com/Ardour/ardour.git ardour
+          if ($LASTEXITCODE -ne 0) { throw "Clone failed" }
+
+      - name: Locate MSVC
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw "MSVC not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          if (!(Test-Path $vcvars)) { throw "MSVC setup missing" }
+          "VCVARS=$vcvars" >> $env:GITHUB_ENV
+
+      - name: Configure and build Ardour
+        shell: cmd
+        run: |
+          @echo off
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+
+          set "STACK=%CD%\stack\release"
+          set "PATH=%STACK%\bin;%PATH%"
+          set "PKG_CONFIG_PATH=%STACK%\lib\pkgconfig"
+
+          cd ardour
+
+          python waf configure --prefix=C:\ArdourMSVC --configdir=share --ptformat --dist-target=msvc --cxx17 --optimize --also-include="%STACK%\include" --also-libdir="%STACK%\lib"
+          if errorlevel 1 exit /b 1
+
+          python waf
+          if errorlevel 1 exit /b 1
+
+          echo ARDOUR BUILD SUCCESS
+
+      - name: Install Ardour into staging
+        id: install
+        continue-on-error: true
+        shell: cmd
+        run: |
+          @echo off
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+
+          set "STACK=%CD%\stack\release"
+          set "PATH=%STACK%\bin;%PATH%"
+          set "PKG_CONFIG_PATH=%STACK%\lib\pkgconfig"
+
+          cd ardour
+          python waf install --destdir="%GITHUB_WORKSPACE%\staging"
+          if errorlevel 1 exit /b 1
+
+      - name: Assemble Windows test package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force package | Out-Null
+
+          $exe = Get-ChildItem ardour/build -Recurse -File -Filter "ardour-*.exe" |
+            Where-Object { $_.FullName -match 'gtk2_ardour' } |
+            Select-Object -First 1
+
+          if (!$exe) { throw "Ardour executable missing" }
+
+          New-Item -ItemType Directory -Force package/bin | Out-Null
+          Copy-Item $exe.FullName package/bin/
+
+          if (Test-Path staging) {
+            Copy-Item staging package/staging -Recurse -Force
+          }
+
+          $dlls = Get-ChildItem ardour/build -Recurse -File -Filter "*.dll"
+          New-Item -ItemType Directory -Force package/build-libs | Out-Null
+
+          foreach ($dll in $dlls) {
+            $relative = $dll.FullName.Substring(
+              (Resolve-Path ardour/build).Path.Length
+            ).TrimStart('\')
+
+            $target = Join-Path package/build-libs $relative
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            Copy-Item $dll.FullName $target -Force
+          }
+
+          @"
+          CHM DAW - Windows Experimental Build
+
+          This package is not yet a verified portable application.
+
+          Ardour executable:
+          bin/
+
+          Compiled libraries:
+          build-libs/
+
+          Installed resources, if available:
+          staging/
+
+          The executable may require additional DLLs,
+          GTK resources, environment configuration
+          and a launcher.
+
+          Do not distribute as a finished installer.
+          "@ | Set-Content package/README.txt
+
+          Compress-Archive -Path package/* `
+            -DestinationPath CHM-DAW-Windows-Test.zip -Force
+
+          Get-Item CHM-DAW-Windows-Test.zip |
+            Select-Object Name,Length
+
+      - name: Upload Windows test package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CHM-DAW-Windows-Test
+          path: |
+            CHM-DAW-Windows-Test.zip
+            ardour/build/config.log
+          if-no-files-found: warn
+          retention-days: 7
