@@ -1,13 +1,13 @@
 
-name: CHM DAW - Windows Test Package
+name: CHM DAW - Windows Boost Diagnostic
 
 on:
   workflow_dispatch:
 
 jobs:
-  package:
+  diagnose:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 60
 
     steps:
       - name: Install Xmake
@@ -19,9 +19,7 @@ jobs:
         shell: pwsh
         run: |
           git clone https://gist.github.com/0e3f7bf6380c086e9ff57f8f34298172.git recipe
-          if ($LASTEXITCODE -ne 0) {
-            throw "Recipe clone failed"
-          }
+          if ($LASTEXITCODE -ne 0) { throw "Recipe clone failed" }
           New-Item -ItemType Directory -Force stack | Out-Null
           Copy-Item recipe/ardour-depxs-xmakes.lua stack/xmake.lua
 
@@ -34,7 +32,7 @@ jobs:
             ~/.xmake
           key: chm-ardour-stack-win-v2
 
-      - name: Build dependency stack
+      - name: Build dependency stack if needed
         if: steps.deps-cache.outputs.cache-hit != 'true'
         shell: pwsh
         working-directory: stack
@@ -46,46 +44,55 @@ jobs:
           xmake -y
           if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
-      - name: Diagnose Raptor dependencies
+      - name: Find Boost and Raptor
         shell: pwsh
         run: |
-          $root = "stack/release/include"
+          $ErrorActionPreference = "Stop"
 
-          if (!(Test-Path $root)) {
-            throw "Dependency include directory missing"
+          Write-Host "Searching Boost headers..."
+
+          $roots = @(
+            "$env:GITHUB_WORKSPACE/stack/release/include",
+            "$env:LOCALAPPDATA/.xmake/packages",
+            "$env:USERPROFILE/.xmake/packages"
+          )
+
+          $found = @()
+
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              $found += Get-ChildItem $root -Recurse -File -Filter version.hpp -ErrorAction SilentlyContinue |
+                Where-Object { $_.Directory.Name -eq "boost" }
+            }
           }
 
-          $headers = Get-ChildItem $root -Recurse -File |
-            Where-Object {
-              $_.Name -eq "raptor.h" -or
-              $_.Name -eq "raptor2.h" -or
-              $_.Name -eq "librdf.h"
-            }
+          $found = @($found | Sort-Object FullName -Unique)
 
-          $headers | Select-Object -ExpandProperty FullName
+          if ($found.Count -eq 0) {
+            Write-Host "::error::Boost version.hpp not found"
+            throw "Boost headers missing from searched locations"
+          }
 
-          if (!(Test-Path "stack/release/include/raptor2/raptor.h")) {
+          foreach ($file in $found) {
+            Write-Host "FOUND: $($file.FullName)"
+          }
+
+          $header = $found[0]
+          $boostRoot = Split-Path $header.Directory.FullName -Parent
+
+          Write-Host "BOOST INCLUDE ROOT: $boostRoot"
+
+          "BOOST_INCLUDE=$boostRoot" >> $env:GITHUB_ENV
+
+          $raptor = "$env:GITHUB_WORKSPACE/stack/release/include/raptor2"
+
+          if (Test-Path "$raptor/raptor.h") {
+            Write-Host "Raptor header found"
+          } else {
             throw "Raptor header missing"
           }
 
-          $env:PKG_CONFIG_PATH = "$env:GITHUB_WORKSPACE/stack/release/lib/pkgconfig"
-
-          pkg-config --cflags raptor2
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Raptor pkg-config check failed"
-          }
-
-          Get-ChildItem stack/release/lib/pkgconfig -Filter "*.pc" |
-            Where-Object { $_.Name -match "raptor|rdf|redland" } |
-            Select-Object -ExpandProperty Name
-
-      - name: Download Ardour source
-        shell: pwsh
-        run: |
-          git clone https://github.com/Ardour/ardour.git ardour
-          if ($LASTEXITCODE -ne 0) {
-            throw "Ardour clone failed"
-          }
+          "RAPTOR_INCLUDE=$raptor" >> $env:GITHUB_ENV
 
       - name: Locate MSVC
         shell: pwsh
@@ -103,7 +110,30 @@ jobs:
 
           "VCVARS=$vcvars" >> $env:GITHUB_ENV
 
-      - name: Configure and compile Ardour
+      - name: Test Boost with MSVC
+        shell: cmd
+        run: |
+          @echo off
+          call "%VCVARS%"
+          if errorlevel 1 exit /b 1
+
+          echo #include ^<boost/version.hpp^> > boost-test.cpp
+          echo int main() { return 0; } >> boost-test.cpp
+
+          cl /nologo /I"%BOOST_INCLUDE%" /c boost-test.cpp
+          if errorlevel 1 exit /b 1
+
+          echo BOOST HEADER TEST SUCCESS
+
+      - name: Download Ardour source
+        shell: pwsh
+        run: |
+          git clone https://github.com/Ardour/ardour.git ardour
+          if ($LASTEXITCODE -ne 0) {
+            throw "Ardour clone failed"
+          }
+
+      - name: Configure Ardour with Boost
         shell: cmd
         run: |
           @echo off
@@ -113,89 +143,22 @@ jobs:
           set "STACK=%CD%\stack\release"
           set "PATH=%STACK%\bin;%PATH%"
           set "PKG_CONFIG_PATH=%STACK%\lib\pkgconfig"
-          set "INCLUDE=%STACK%\include\raptor2;%INCLUDE%"
+          set "INCLUDE=%BOOST_INCLUDE%;%RAPTOR_INCLUDE%;%STACK%\include;%INCLUDE%"
 
           cd ardour
 
-          python waf configure --prefix=C:\ArdourMSVC --configdir=share --ptformat --dist-target=msvc --cxx17 --optimize --also-include="%STACK%\include" --also-include="%STACK%\include\raptor2" --also-libdir="%STACK%\lib"
+          python waf configure --prefix=C:\ArdourMSVC --configdir=share --ptformat --dist-target=msvc --cxx17 --optimize --also-include="%BOOST_INCLUDE%" --also-include="%RAPTOR_INCLUDE%" --also-include="%STACK%\include" --also-libdir="%STACK%\lib"
+
           if errorlevel 1 exit /b 1
 
-          python waf
-          if errorlevel 1 exit /b 1
+          echo ARDOUR CONFIGURATION SUCCESS
 
-          echo ARDOUR BUILD SUCCESS
-
-      - name: Prepare experimental package
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          New-Item -ItemType Directory -Force package/bin | Out-Null
-          New-Item -ItemType Directory -Force package/build-libs | Out-Null
-
-          $exe = Get-ChildItem ardour/build -Recurse -File -Filter "ardour-*.exe" |
-            Where-Object { $_.FullName -match "gtk2_ardour" } |
-            Select-Object -First 1
-
-          if (!$exe) {
-            throw "Ardour executable not found"
-          }
-
-          Copy-Item $exe.FullName package/bin/
-
-          $buildRoot = (Resolve-Path ardour/build).Path
-
-          Get-ChildItem ardour/build -Recurse -File -Filter "*.dll" |
-            ForEach-Object {
-              $relative = $_.FullName.Substring($buildRoot.Length).TrimStart('\')
-              $destination = Join-Path package/build-libs $relative
-              New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null
-              Copy-Item $_.FullName $destination -Force
-            }
-
-          if (Test-Path stack/release/bin) {
-            Copy-Item stack/release/bin package/dependency-bin -Recurse -Force
-          }
-
-          @"
-          CHM DAW - Windows Experimental Package
-
-          This is an experimental compilation package.
-          It is not yet a verified Windows application.
-
-          Executable: bin/
-          Ardour libraries: build-libs/
-          Dependencies: dependency-bin/
-
-          A proper launcher, GTK resources, additional
-          runtime libraries and configuration may still
-          be required.
-
-          Ardour source:
-          https://github.com/Ardour/ardour
-          "@ | Set-Content package/README.txt
-
-          Compress-Archive -Path package/* `
-            -DestinationPath CHM-DAW-Windows-Test.zip -Force
-
-          Get-Item CHM-DAW-Windows-Test.zip |
-            Select-Object Name, Length
-
-      - name: Upload Windows package
+      - name: Upload configuration diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: CHM-DAW-Windows-Test
-          path: CHM-DAW-Windows-Test.zip
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: CHM-DAW-Build-Diagnostics
+          name: CHM-DAW-Boost-Diagnostics
           path: |
             ardour/build/config.log
-            ardour/build/c4che/
           if-no-files-found: ignore
           retention-days: 7
