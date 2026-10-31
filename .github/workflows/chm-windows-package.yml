@@ -19,7 +19,9 @@ jobs:
         shell: pwsh
         run: |
           git clone https://gist.github.com/0e3f7bf6380c086e9ff57f8f34298172.git recipe
-          if ($LASTEXITCODE -ne 0) { throw "Recipe clone failed" }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Recipe clone failed"
+          }
           New-Item -ItemType Directory -Force stack | Out-Null
           Copy-Item recipe/ardour-depxs-xmakes.lua stack/xmake.lua
 
@@ -40,50 +42,65 @@ jobs:
           xrepo update-repo
           if ($LASTEXITCODE -ne 0) { throw "Xrepo failed" }
           xmake f -c -y
-          if ($LASTEXITCODE -ne 0) { throw "Xmake configure failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Configure failed" }
           xmake -y
-          if ($LASTEXITCODE -ne 0) { throw "Xmake build failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
-      - name: Diagnose Raptor headers
+      - name: Diagnose Raptor dependencies
         shell: pwsh
         run: |
-          Write-Host "Checking Raptor headers..."
           $root = "stack/release/include"
 
           if (!(Test-Path $root)) {
             throw "Dependency include directory missing"
           }
 
-          Get-ChildItem $root -Recurse -File |
+          $headers = Get-ChildItem $root -Recurse -File |
             Where-Object {
               $_.Name -eq "raptor.h" -or
               $_.Name -eq "raptor2.h" -or
               $_.Name -eq "librdf.h"
-            } |
-            Select-Object -ExpandProperty FullName
+            }
 
-          Write-Host "Checking pkg-config..."
+          $headers | Select-Object -ExpandProperty FullName
+
+          if (!(Test-Path "stack/release/include/raptor2/raptor.h")) {
+            throw "Raptor header missing"
+          }
+
           $env:PKG_CONFIG_PATH = "$env:GITHUB_WORKSPACE/stack/release/lib/pkgconfig"
 
-          foreach ($pkg in @("raptor2", "redland")) {
-            Write-Host "Package: $pkg"
-            pkg-config --cflags $pkg
+          pkg-config --cflags raptor2
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Raptor pkg-config check failed"
           }
+
+          Get-ChildItem stack/release/lib/pkgconfig -Filter "*.pc" |
+            Where-Object { $_.Name -match "raptor|rdf|redland" } |
+            Select-Object -ExpandProperty Name
 
       - name: Download Ardour source
         shell: pwsh
         run: |
           git clone https://github.com/Ardour/ardour.git ardour
-          if ($LASTEXITCODE -ne 0) { throw "Ardour clone failed" }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Ardour clone failed"
+          }
 
       - name: Locate MSVC
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+
           if (!$vs) { throw "MSVC not found" }
+
           $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
-          if (!(Test-Path $vcvars)) { throw "MSVC setup missing" }
+
+          if (!(Test-Path $vcvars)) {
+            throw "MSVC setup missing"
+          }
+
           "VCVARS=$vcvars" >> $env:GITHUB_ENV
 
       - name: Configure and compile Ardour
@@ -96,16 +113,19 @@ jobs:
           set "STACK=%CD%\stack\release"
           set "PATH=%STACK%\bin;%PATH%"
           set "PKG_CONFIG_PATH=%STACK%\lib\pkgconfig"
+          set "INCLUDE=%STACK%\include\raptor2;%INCLUDE%"
 
           cd ardour
 
-          python waf configure --prefix=C:\ArdourMSVC --configdir=share --ptformat --dist-target=msvc --cxx17 --optimize --also-include="%STACK%\include" --also-libdir="%STACK%\lib"
+          python waf configure --prefix=C:\ArdourMSVC --configdir=share --ptformat --dist-target=msvc --cxx17 --optimize --also-include="%STACK%\include" --also-include="%STACK%\include\raptor2" --also-libdir="%STACK%\lib"
           if errorlevel 1 exit /b 1
 
           python waf
           if errorlevel 1 exit /b 1
 
-      - name: Prepare package
+          echo ARDOUR BUILD SUCCESS
+
+      - name: Prepare experimental package
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -140,20 +160,26 @@ jobs:
           @"
           CHM DAW - Windows Experimental Package
 
-          This is an experimental build, not a finished installer.
+          This is an experimental compilation package.
+          It is not yet a verified Windows application.
 
           Executable: bin/
-          Ardour DLLs: build-libs/
-          Dependency DLLs: dependency-bin/
+          Ardour libraries: build-libs/
+          Dependencies: dependency-bin/
 
-          The application may not launch until additional
-          resources, runtime libraries and a proper launcher
-          are included.
+          A proper launcher, GTK resources, additional
+          runtime libraries and configuration may still
+          be required.
 
-          Source: https://github.com/Ardour/ardour
+          Ardour source:
+          https://github.com/Ardour/ardour
           "@ | Set-Content package/README.txt
 
-          Compress-Archive -Path package/* -DestinationPath CHM-DAW-Windows-Test.zip -Force
+          Compress-Archive -Path package/* `
+            -DestinationPath CHM-DAW-Windows-Test.zip -Force
+
+          Get-Item CHM-DAW-Windows-Test.zip |
+            Select-Object Name, Length
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
@@ -161,4 +187,15 @@ jobs:
           name: CHM-DAW-Windows-Test
           path: CHM-DAW-Windows-Test.zip
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CHM-DAW-Build-Diagnostics
+          path: |
+            ardour/build/config.log
+            ardour/build/c4che/
+          if-no-files-found: ignore
           retention-days: 7
