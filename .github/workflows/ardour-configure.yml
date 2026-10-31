@@ -1,13 +1,13 @@
 
-name: CHM DAW - Windows Xmake Dependencies
+name: CHM DAW - Windows Ardour Build
 
 on:
   workflow_dispatch:
 
 jobs:
-  dependencies:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
 
     steps:
       - name: Install Xmake
@@ -15,71 +15,114 @@ jobs:
         with:
           xmake-version: latest
 
-      - name: Check tools
-        shell: pwsh
-        run: |
-          xmake --version
-          xrepo --version
-          git --version
-
-      - name: Download Ardour dependency recipe
+      - name: Download dependency recipe
         shell: pwsh
         run: |
           git clone https://gist.github.com/0e3f7bf6380c086e9ff57f8f34298172.git recipe
-
-          New-Item -ItemType Directory -Force -Path stack | Out-Null
-
+          New-Item -ItemType Directory -Force stack | Out-Null
           Copy-Item recipe/ardour-depxs-xmakes.lua stack/xmake.lua
 
-          if (!(Test-Path stack/xmake.lua)) {
-            throw "Dependency recipe missing"
-          }
+      - name: Restore dependency cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            stack/release
+            ~\.xmake
+          key: ardour-xmake-win-${{ runner.os }}-v1
 
-          Get-Content stack/xmake.lua -TotalCount 20
-
-      - name: Update Xrepo
+      - name: Prepare dependency stack
+        if: steps.cache.outputs.cache-hit != 'true'
         shell: pwsh
+        working-directory: stack
         run: |
           xrepo update-repo
-          if ($LASTEXITCODE -ne 0) {
-            throw "Xrepo update failed"
-          }
-
-      - name: Configure dependency stack
-        shell: pwsh
-        working-directory: stack
-        run: |
           xmake f -c -y
           if ($LASTEXITCODE -ne 0) {
-            throw "Xmake configuration failed"
+            throw "Dependency configuration failed"
           }
-
-      - name: Build dependency stack
-        shell: pwsh
-        working-directory: stack
-        run: |
           xmake -y
           if ($LASTEXITCODE -ne 0) {
             throw "Dependency build failed"
           }
 
-      - name: Inspect dependencies
+      - name: Verify dependencies
         shell: pwsh
         run: |
-          if (Test-Path stack/release) {
-            Get-ChildItem stack/release
-            Get-ChildItem stack/release -Recurse -Filter "*.pc" |
-              Select-Object -First 40 -ExpandProperty FullName
-          } else {
-            throw "Release dependency folder missing"
+          if (!(Test-Path stack/release/lib)) {
+            throw "Dependency library folder missing"
+          }
+          Get-ChildItem stack/release
+
+      - name: Download Ardour full source
+        shell: pwsh
+        run: |
+          git clone https://github.com/Ardour/ardour.git ardour
+          if ($LASTEXITCODE -ne 0) {
+            throw "Ardour clone failed"
           }
 
-      - name: Upload diagnostic files
+      - name: Check compiler and LLVM
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $version = & $vswhere -latest -products * -property installationVersion
+          Write-Host "Visual Studio version: $version"
+
+          if (!$version -or ([int]($version.Split('.')[0]) -lt 18)) {
+            throw "Visual Studio 2026 (version 18+) required"
+          }
+
+          $llvm = Get-Command llvm-nm -ErrorAction SilentlyContinue
+          if (!$llvm) {
+            throw "llvm-nm not found in PATH"
+          }
+          & llvm-nm --version
+
+      - name: Configure Ardour
+        shell: pwsh
+        working-directory: ardour
+        run: |
+          $root = (Resolve-Path ../stack/release).Path
+
+          $env:PATH = "$root\bin;$env:PATH"
+          $env:PKG_CONFIG_PATH = "$root\lib\pkgconfig"
+
+          python waf configure `
+            --prefix=C:\ArdourMSVC `
+            --configdir=share `
+            --ptformat `
+            --dist-target=msvc `
+            --cxx17 `
+            --optimize `
+            --also-include="$root\include" `
+            --also-libdir="$root\lib"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Ardour configuration failed"
+          }
+
+      - name: Compile Ardour
+        shell: pwsh
+        working-directory: ardour
+        run: |
+          $root = (Resolve-Path ../stack/release).Path
+
+          $env:PATH = "$root\bin;$env:PATH"
+          $env:PKG_CONFIG_PATH = "$root\lib\pkgconfig"
+
+          python waf
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Ardour compilation failed"
+          }
+
+      - name: Upload build files
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chm-daw-xmake-diagnostics
+          name: chm-daw-windows-build
           path: |
-            stack/.xmake/
-            stack/build/
-          if-no-files-found: ignore
+            ardour/build/
+          if-no-files-found: warn
+          retention-days: 7
