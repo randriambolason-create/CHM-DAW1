@@ -1,0 +1,110 @@
+
+name: Ardour Windows - Resource Repackage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  repackage:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download existing compiled artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: CHM-DAW-Windows-Test
+          run-id: 41195975090
+          github-token: ${{ github.token }}
+          path: downloaded
+
+      - name: Extract compiled package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Get-ChildItem downloaded -Recurse -File -Filter '*.zip' | Select-Object -First 1
+          if (!$zip) { throw 'Build ZIP not found' }
+
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath package -Force
+
+          if (!(Test-Path 'package/build/gtk2_ardour/ardour-9.8.271.exe')) {
+            throw 'Expected Ardour executable missing'
+          }
+
+      - name: Get matching Ardour source
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none https://github.com/Ardour/ardour.git source
+          if ($LASTEXITCODE -ne 0) { throw 'Clone failed' }
+
+          git -C source checkout 12c7655f18
+          if ($LASTEXITCODE -ne 0) { throw 'Matching source commit unavailable' }
+
+      - name: Inventory and copy Ardour resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $destination = 'package/build/gtk2_ardour/share/ardour9'
+          New-Item -ItemType Directory -Force $destination | Out-Null
+
+          $patterns = @(
+            '*.colors', '*.rc', '*.ui', '*.png',
+            '*.svg', '*.ttf', '*.otf', '*.xml', '*.keys'
+          )
+
+          $roots = @('source/gtk2_ardour', 'source/share')
+          $report = @(
+            'Ardour resource repackage report',
+            'Compiled executable retained; no compilation performed.',
+            ''
+          )
+
+          foreach ($root in $roots) {
+            if (!(Test-Path $root)) { continue }
+
+            foreach ($pattern in $patterns) {
+              $files = @(
+                Get-ChildItem $root -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue
+              )
+
+              $report += "$root / $pattern : $($files.Count)"
+
+              foreach ($file in $files) {
+                $relative = $file.FullName.Substring(
+                  (Resolve-Path $root).Path.Length
+                ).TrimStart('\')
+
+                $target = Join-Path $destination (
+                  Join-Path (Split-Path $root -Leaf) $relative
+                )
+
+                New-Item -ItemType Directory -Force (Split-Path $target -Parent) | Out-Null
+                Copy-Item -LiteralPath $file.FullName -Destination $target -Force
+              }
+            }
+          }
+
+          $report += ''
+          $report += 'NOTE: Source resource paths may not match installed Ardour layout.'
+          $report += 'This ZIP is experimental and not confirmed runnable.'
+
+          $report | Set-Content -Path resource-report.txt -Encoding utf8
+          Get-Content resource-report.txt
+
+      - name: Create repackaged ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path package/* -DestinationPath Ardour-Windows-Resources-Test.zip -Force
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ardour-Windows-Resources-Test
+          path: |
+            Ardour-Windows-Resources-Test.zip
+            resource-report.txt
+          retention-days: 7
