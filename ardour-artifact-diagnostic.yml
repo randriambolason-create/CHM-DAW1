@@ -1,0 +1,67 @@
+
+name: Ardour Windows - Artifact Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Download existing build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: CHM-DAW-Windows-Test
+          run-id: 41195975090
+          github-token: ${{ github.token }}
+          path: downloaded
+
+      - name: Inspect build files and resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Get-ChildItem downloaded -Recurse -File -Filter '*.zip' | Select-Object -First 1
+          if (!$zip) { throw 'No ZIP inside downloaded artifact' }
+
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath extracted -Force
+
+          $names = @(
+            'ardour-*.exe',
+            'clearlooks.rc',
+            'ardour.keys',
+            'ArdourSans*.ttf',
+            'ArdourMono*.ttf',
+            '*.colors',
+            '*.ui',
+            '*.png',
+            'ardour-vst-scanner*',
+            'ardour-vst3-scanner*'
+          )
+
+          $report = @('Ardour Windows artifact resource inventory', "Artifact: $($zip.Name)", '')
+
+          foreach ($pattern in $names) {
+            $matches = @(Get-ChildItem extracted -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue)
+            $report += "=== $pattern : $($matches.Count) ==="
+            $report += @($matches | Select-Object -First 30 | ForEach-Object {
+              $_.FullName.Substring((Resolve-Path extracted).Path.Length + 1)
+            })
+            $report += ''
+          }
+
+          $report | Set-Content -Path ardour-resource-report.txt -Encoding utf8
+          Get-Content ardour-resource-report.txt
+
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ardour-Resource-Diagnostic
+          path: ardour-resource-report.txt
+          if-no-files-found: warn
